@@ -83,26 +83,30 @@ async function navigateToPurchaseHistory(page) {
 async function setDateAndGetReport(page, dateForPicker) {
   await page.waitForSelector("#FromDate", { visible: true });
   await page.evaluate((dateStr) => {
-    const input = document.getElementById("FromDate");
-    if (!input) return;
-    try {
-      // eslint-disable-next-line no-undef
-      const widget = kendo.widgetInstance(input);
-      if (widget && typeof widget.value === "function") {
-        widget.value(new Date(dateStr));
-        widget.trigger("change");
-        return;
+    const setField = (id) => {
+      const input = document.getElementById(id);
+      if (!input) return;
+      try {
+        // eslint-disable-next-line no-undef
+        const widget = kendo.widgetInstance(input);
+        if (widget && typeof widget.value === "function") {
+          widget.value(new Date(dateStr));
+          widget.trigger("change");
+          return;
+        }
+      } catch (_) {
+        // fall through
       }
-    } catch (_) {
-      // fall through
-    }
-    const nativeSetter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
-      "value",
-    ).set;
-    nativeSetter.call(input, dateStr);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      ).set;
+      nativeSetter.call(input, dateStr);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    setField("FromDate");
+    setField("ToDate");
   }, dateForPicker);
   await sleep(1000);
 
