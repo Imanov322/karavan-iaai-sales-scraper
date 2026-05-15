@@ -1,0 +1,23 @@
+{
+  "name": "karavan-iaai-sales-scraper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HTTP microservice that logs into IAAI, locates a won vehicle by lot number + win date + account, and returns description + image URLs for the Sales module.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0-rc.12",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "morgan": "^1.10.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "puppeteer": "^23.0.0"
+  }
+}
