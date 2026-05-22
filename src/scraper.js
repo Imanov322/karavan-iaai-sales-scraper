@@ -82,19 +82,53 @@ async function navigateToPurchaseHistory(page) {
 
 async function setDateAndGetReport(page, dateForPicker) {
   await page.waitForSelector("#FromDate", { visible: true });
-  await page.evaluate((dateStr) => {
+
+  const setResult = await page.evaluate((dateStr) => {
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const dateObj = new Date(y, m - 1, d);
+
+    // Reset QuickDate to "Select" (9999) so the manual From/To dates aren't
+    // overridden by a preset range like "Last 7 Days".
+    const quickDate = document.getElementById("QuickDate");
+    let quickDateBefore = null;
+    let quickDateAfter = null;
+    if (quickDate) {
+      quickDateBefore = quickDate.value;
+      try {
+        // eslint-disable-next-line no-undef
+        const widget = kendo.widgetInstance(quickDate);
+        if (widget && typeof widget.value === "function") {
+          widget.value("9999");
+          widget.trigger("change");
+        } else {
+          quickDate.value = "9999";
+          quickDate.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      } catch (_) {
+        quickDate.value = "9999";
+        quickDate.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      quickDateAfter = quickDate.value;
+    }
+
     const setField = (id) => {
       const input = document.getElementById(id);
-      if (!input) return;
+      if (!input) return { id, ok: false, reason: "input not found", value: "" };
       try {
         // eslint-disable-next-line no-undef
         const widget = kendo.widgetInstance(input);
         if (widget && typeof widget.value === "function") {
-          widget.value(new Date(dateStr));
+          widget.value(dateObj);
           widget.trigger("change");
-          return;
+          return {
+            id,
+            ok: true,
+            via: "kendo",
+            value: input.value,
+            widgetValue: widget.value()?.toISOString?.() || null,
+          };
         }
-      } catch (_) {
+      } catch (e) {
         // fall through
       }
       const nativeSetter = Object.getOwnPropertyDescriptor(
@@ -104,10 +138,21 @@ async function setDateAndGetReport(page, dateForPicker) {
       nativeSetter.call(input, dateStr);
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
+      return { id, ok: true, via: "native", value: input.value };
     };
-    setField("FromDate");
-    setField("ToDate");
+    return {
+      QuickDate: { before: quickDateBefore, after: quickDateAfter },
+      FromDate: setField("FromDate"),
+      ToDate: setField("ToDate"),
+    };
   }, dateForPicker);
+
+  console.log(
+    `[scrape]     QuickDate -> ${JSON.stringify(setResult.QuickDate)}`,
+  );
+  console.log(`[scrape]     FromDate  -> ${JSON.stringify(setResult.FromDate)}`);
+  console.log(`[scrape]     ToDate    -> ${JSON.stringify(setResult.ToDate)}`);
+
   await sleep(1000);
 
   await page.waitForSelector("#btnGetReport", { visible: true });
