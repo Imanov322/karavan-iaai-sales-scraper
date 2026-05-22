@@ -27,7 +27,7 @@ function getLaunchOpts() {
       "--no-default-browser-check",
       "--disable-extensions",
       "--lang=en-US",
-      "--window-size=1280,800",
+      "--window-size=1920,1080",
     ],
   };
 }
@@ -128,6 +128,21 @@ async function setDateAndGetReport(page, dateForPicker) {
 }
 
 /**
+ * Read every stock number currently rendered in the report grid.
+ */
+async function getStockNumbersInGrid(page) {
+  return await page.evaluate(() => {
+    const rows = Array.from(
+      document.querySelectorAll("#ReportGrid tbody tr.k-master-row"),
+    );
+    return rows.map((row) => {
+      const link = row.querySelector("td:nth-child(5) a.bpLinkUnderline");
+      return (link?.textContent || "").trim();
+    });
+  });
+}
+
+/**
  * Find the row in the report grid whose Stock column matches `lotNumber`.
  * Returns 0-based row index, or -1.
  */
@@ -139,7 +154,9 @@ async function findRowByLot(page, lotNumber) {
     );
     for (let i = 0; i < rows.length; i++) {
       // Stock column is 5th in Purchase History
-      const stockLink = rows[i].querySelector("td:nth-child(5) a.bpLinkUnderline");
+      const stockLink = rows[i].querySelector(
+        "td:nth-child(5) a.bpLinkUnderline",
+      );
       const stockNum = (stockLink?.textContent || "").trim();
       if (stockNum === target) return i;
     }
@@ -192,7 +209,7 @@ async function scrape({ lotNumber, winDate, account }) {
   const browser = await puppeteer.launch(getLaunchOpts());
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
+    await page.setViewport({ width: 1920, height: 1080 });
     await page.setDefaultTimeout(120000);
     await page.setDefaultNavigationTimeout(120000);
 
@@ -205,28 +222,50 @@ async function scrape({ lotNumber, winDate, account }) {
     // Iterate tenant tabs — buyer accounts may have multiple, the lot lives in
     // exactly one of them. We try each until we find a match.
     await page.waitForSelector(".tenantBarItem", { visible: true });
-    const tenantCount = await page.$$eval(".tenantBarItem", (els) => els.length);
+    const tenantCount = await page.$$eval(
+      ".tenantBarItem",
+      (els) => els.length,
+    );
     console.log(`[scrape] ${tenantCount} tenant tab(s) to scan`);
+
+    const tenantNames = { 1: "IAA", 2: "ADESA", 3: "MPI", 4: "SGI", 5: "ICBC" };
 
     let html = null;
     for (let i = 0; i < tenantCount; i++) {
-      const tab = (await page.$$(".tenantBarItem"))[i];
+      const tabs = await page.$$(".tenantBarItem");
+      const tab = tabs[i];
+      const tenantId = await tab.evaluate(
+        (el) =>
+          el.querySelector(".tenantBarBody")?.getAttribute("data-id") || "?",
+      );
+      const tenantLabel = `tab ${i + 1} (data-id=${tenantId} ${tenantNames[tenantId] || "?"})`;
+
       await tab.click();
       await sleep(1500);
 
+      console.log(
+        `[scrape]   ${tenantLabel}: setting FromDate=ToDate=${winDate}`,
+      );
       const hasRows = await setDateAndGetReport(page, winDate);
       if (!hasRows) {
-        console.log(`[scrape]   tab ${i + 1}: no rows for ${winDate}`);
+        console.log(`[scrape]   ${tenantLabel}: no rows for ${winDate}`);
         continue;
       }
+
+      const stockNums = await getStockNumbersInGrid(page);
+      console.log(
+        `[scrape]   ${tenantLabel}: ${stockNums.length} row(s), stock #s: ${stockNums.join(", ") || "(none)"}`,
+      );
 
       const rowIdx = await findRowByLot(page, lotNumber);
       if (rowIdx < 0) {
-        console.log(`[scrape]   tab ${i + 1}: lot ${lotNumber} not found`);
+        console.log(`[scrape]   ${tenantLabel}: lot ${lotNumber} not found`);
         continue;
       }
 
-      console.log(`[scrape]   tab ${i + 1}: lot ${lotNumber} at row ${rowIdx}`);
+      console.log(
+        `[scrape]   ${tenantLabel}: lot ${lotNumber} at row ${rowIdx}`,
+      );
       html = await openLotInNewTab(page, browser, rowIdx);
       break;
     }
