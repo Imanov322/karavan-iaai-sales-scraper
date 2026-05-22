@@ -86,9 +86,29 @@ async function setDateAndGetReport(page, dateForPicker) {
   const setResult = await page.evaluate((dateStr) => {
     const [y, m, d] = dateStr.split("-").map(Number);
     const dateObj = new Date(y, m - 1, d);
+    // IAAI's Kendo DatePicker expects MM/dd/yyyy for native typing.
+    const mmddyyyy = `${String(m).padStart(2, "0")}/${String(d).padStart(2, "0")}/${y}`;
 
-    // Reset QuickDate to "Select" (9999) so the manual From/To dates aren't
-    // overridden by a preset range like "Last 7 Days".
+    const getKendo = (input) => {
+      // Try jQuery first (Kendo registers widgets in $.data), then global helper.
+      try {
+        // eslint-disable-next-line no-undef
+        if (window.$ || window.jQuery) {
+          // eslint-disable-next-line no-undef
+          const $ = window.$ || window.jQuery;
+          const w = $(input).data("kendoDatePicker");
+          if (w) return w;
+        }
+      } catch (_) {}
+      try {
+        // eslint-disable-next-line no-undef
+        return kendo.widgetInstance(input);
+      } catch (_) {
+        return null;
+      }
+    };
+
+    // Reset QuickDate to "Select" (9999) so manual dates aren't overridden.
     const quickDate = document.getElementById("QuickDate");
     let quickDateBefore = null;
     let quickDateAfter = null;
@@ -96,10 +116,14 @@ async function setDateAndGetReport(page, dateForPicker) {
       quickDateBefore = quickDate.value;
       try {
         // eslint-disable-next-line no-undef
-        const widget = kendo.widgetInstance(quickDate);
-        if (widget && typeof widget.value === "function") {
-          widget.value("9999");
-          widget.trigger("change");
+        const $ = window.$ || window.jQuery;
+        const w =
+          ($ && $(quickDate).data("kendoDropDownList")) ||
+          // eslint-disable-next-line no-undef
+          (typeof kendo !== "undefined" && kendo.widgetInstance(quickDate));
+        if (w && typeof w.value === "function") {
+          w.value("9999");
+          w.trigger("change");
         } else {
           quickDate.value = "9999";
           quickDate.dispatchEvent(new Event("change", { bubbles: true }));
@@ -114,30 +138,26 @@ async function setDateAndGetReport(page, dateForPicker) {
     const setField = (id) => {
       const input = document.getElementById(id);
       if (!input) return { id, ok: false, reason: "input not found", value: "" };
-      try {
-        // eslint-disable-next-line no-undef
-        const widget = kendo.widgetInstance(input);
-        if (widget && typeof widget.value === "function") {
-          widget.value(dateObj);
-          widget.trigger("change");
-          return {
-            id,
-            ok: true,
-            via: "kendo",
-            value: input.value,
-            widgetValue: widget.value()?.toISOString?.() || null,
-          };
-        }
-      } catch (e) {
-        // fall through
+      const widget = getKendo(input);
+      if (widget && typeof widget.value === "function") {
+        widget.value(dateObj);
+        widget.trigger("change");
+        return {
+          id,
+          ok: true,
+          via: "kendo",
+          value: input.value,
+          widgetValue: widget.value()?.toISOString?.() || null,
+        };
       }
       const nativeSetter = Object.getOwnPropertyDescriptor(
         window.HTMLInputElement.prototype,
         "value",
       ).set;
-      nativeSetter.call(input, dateStr);
+      nativeSetter.call(input, mmddyyyy);
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.dispatchEvent(new Event("blur", { bubbles: true }));
       return { id, ok: true, via: "native", value: input.value };
     };
     return {
@@ -170,6 +190,39 @@ async function setDateAndGetReport(page, dateForPicker) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Click a tenant tab and wait for the grid to re-render. Assumes the
+ * date filter has already been set globally.
+ */
+async function selectTenantTab(page, tabHandle) {
+  // Capture current grid signature so we can detect when it changes.
+  const before = await page.evaluate(() => {
+    const rows = document.querySelectorAll(
+      "#ReportGrid tbody tr.k-master-row",
+    );
+    return rows.length + ":" + (rows[0]?.innerText || "");
+  });
+
+  await tabHandle.click();
+
+  // Wait until the grid is replaced (rows mutate) OR timeout.
+  await page
+    .waitForFunction(
+      (prev) => {
+        const rows = document.querySelectorAll(
+          "#ReportGrid tbody tr.k-master-row",
+        );
+        const sig = rows.length + ":" + (rows[0]?.innerText || "");
+        return sig !== prev;
+      },
+      { timeout: 15000 },
+      before,
+    )
+    .catch(() => {});
+
+  await sleep(1500);
 }
 
 /**
@@ -275,6 +328,15 @@ async function scrape({ lotNumber, winDate, account }) {
 
     const tenantNames = { 1: "IAA", 2: "ADESA", 3: "MPI", 4: "SGI", 5: "ICBC" };
 
+    // Set the date filter ONCE on whatever tab is initially selected. The
+    // FromDate/ToDate inputs are shared across all tenant tabs in the IAAI
+    // UI — switching tabs reuses the same filter.
+    console.log(`[scrape] setting global FromDate=ToDate=${winDate}`);
+    const initialHasRows = await setDateAndGetReport(page, winDate);
+    console.log(
+      `[scrape] initial report loaded: ${initialHasRows ? "rows present" : "no rows"}`,
+    );
+
     let html = null;
     for (let i = 0; i < tenantCount; i++) {
       const tabs = await page.$$(".tenantBarItem");
@@ -285,16 +347,15 @@ async function scrape({ lotNumber, winDate, account }) {
       );
       const tenantLabel = `tab ${i + 1} (data-id=${tenantId} ${tenantNames[tenantId] || "?"})`;
 
-      await tab.click();
-      await sleep(1500);
-
-      console.log(
-        `[scrape]   ${tenantLabel}: setting FromDate=ToDate=${winDate}`,
+      // Skip the click on the tab that's already selected — clicking a
+      // selected tab on this page is a no-op and would not trigger reload.
+      const isSelected = await tab.evaluate(
+        (el) => !!el.querySelector(".tenantBarBody.selected"),
       );
-      const hasRows = await setDateAndGetReport(page, winDate);
-      if (!hasRows) {
-        console.log(`[scrape]   ${tenantLabel}: no rows for ${winDate}`);
-        continue;
+      if (!isSelected) {
+        await selectTenantTab(page, tab);
+      } else {
+        console.log(`[scrape]   ${tenantLabel}: already selected`);
       }
 
       const stockNums = await getStockNumbersInGrid(page);
