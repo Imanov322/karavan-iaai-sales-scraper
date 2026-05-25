@@ -150,4 +150,78 @@ function generateMessage(data) {
   );
 }
 
-module.exports = { getCarDetailsFromHTML, generateMessage };
+function getCopartDetailsFromHTML(html, lotNumber) {
+  const $ = cheerio.load(html);
+
+  const labelValue = (label) =>
+    $("label")
+      .filter((_i, el) => $(el).text().includes(label))
+      .next("span.lot-details-desc")
+      .text()
+      .trim();
+
+  const make = $("h1.title").text().trim();
+  const vin = $(".lot-details-desc").eq(1).text().trim();
+  const primaryDamage = $('span[data-uname="lotdetailPrimarydamagevalue"]')
+    .text()
+    .trim();
+  const engine = $('span[data-uname="lotdetailEnginetype"]').text().trim();
+  const transmission = labelValue("Transmission");
+  const drive = labelValue("Drive");
+  const fuel = labelValue("Fuel");
+  const keys = labelValue("Keys");
+  const highlights = $(".highlights-popover-cntnt > span").text().trim();
+  const notes = $('[data-uname="lotdetailNotesvalue"]').text().trim();
+  const odometer = $('span[data-uname="lotdetailOdometervalue"] span span')
+    .first()
+    .text()
+    .trim();
+  const date = $('span[data-uname="lotdetailSaleinformationsaledatevalue"]')
+    .text()
+    .trim();
+  const location = $('a[data-uname="lotdetailSaleinformationlocationvalue"]')
+    .text()
+    .trim();
+
+  return {
+    lotNumber: String(lotNumber),
+    make,
+    vin,
+    primaryDamage,
+    engine,
+    transmission,
+    drive,
+    fuel,
+    keys,
+    highlights,
+    notes,
+    date,
+    mileage: odometer,
+    location,
+    images: [],
+  };
+}
+
+function generateCopartMessage(data) {
+  const channelLink =
+    '<a href="https://t.me/karavan_auctions">📢 @karavanmotors</a>';
+  return (
+    `<b>Karavan Motors</b>\n${channelLink}\n<b>Auction: Copart</b>\n` +
+    `Make: ${data.make}\nMileage: ${data.mileage}\nEngine: ${data.engine}\n` +
+    `Transmission: ${data.transmission}\nDrive: ${data.drive}\n` +
+    `Fuel: ${data.fuel}\nKeys: ${data.keys}\n` +
+    `VIN: ${data.vin}\nPrimary Damage: ${data.primaryDamage}\n` +
+    `Highlights: ${data.highlights}\nNotes: ${data.notes}\n\n` +
+    `<b>Location: ${data.location}</b>\n` +
+    `<b>Sale Date: ${data.date}</b>\n` +
+    `<b>Lot#: ${data.lotNumber}</b>\n` +
+    `<a href="${data.link}">View on Copart</a>\n`
+  );
+}
+
+module.exports = {
+  getCarDetailsFromHTML,
+  generateMessage,
+  getCopartDetailsFromHTML,
+  generateCopartMessage,
+};

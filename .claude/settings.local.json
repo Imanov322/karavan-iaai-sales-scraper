@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"c:/Users/Emil/Karavan/\" 2>&1 | head -40)",
+      "Read(//c/Users/Emil/Karavan/**)"
+    ]
+  }
+}

@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const morgan = require("morgan");
 const { scrape } = require("./scraper");
+const { scrapeCopart } = require("./copartScraper");
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -47,6 +48,30 @@ app.post("/scrape", async (req, res) => {
     return res.json(result);
   } catch (err) {
     console.error("[scrape] failed:", err);
+    return res
+      .status(500)
+      .json({ error: "Scrape failed", detail: err.message });
+  }
+});
+
+app.post("/scrape-copart", async (req, res) => {
+  if (API_KEY) {
+    const provided = req.header("x-api-key");
+    if (provided !== API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+  }
+
+  const { lotNumber } = req.body || {};
+  if (!lotNumber) {
+    return res.status(400).json({ error: "lotNumber is required" });
+  }
+
+  try {
+    const result = await queueScrape(() => scrapeCopart({ lotNumber }));
+    return res.json(result);
+  } catch (err) {
+    console.error("[scrape-copart] failed:", err);
     return res
       .status(500)
       .json({ error: "Scrape failed", detail: err.message });
