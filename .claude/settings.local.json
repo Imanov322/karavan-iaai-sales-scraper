@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(ls \"c:/Users/Emil/Karavan/\" 2>&1 | head -40)",
-      "Read(//c/Users/Emil/Karavan/**)"
+      "Read(//c/Users/Emil/Karavan/**)",
+      "Bash(cd \"/c/Users/Emil/Karavan/copart-scraper\" && ls -la && echo \"---ls temp sample---\" && ls \"/c/Users/Emil/AppData/Local/Temp/copart_48266536_jmVbYf\" 2>/dev/null | head)",
+      "Read(//c/Users/Emil/AppData/Local/Temp/copart_48266536_jmVbYf/**)",
+      "Bash(node -e \"try{console.log\\('node-appwrite', require\\('/c/Users/Emil/Karavan/karavan-office-backend/node_modules/node-appwrite/package.json'\\).version\\)}catch\\(e\\){console.log\\('n/a'\\)}\")",
+      "PowerShell(npm install node-appwrite@^21.0.0 unzipper@^0.12.3)",
+      "PowerShell(node -e \"require\\('dotenv'\\).config\\(\\); const a=require\\('./src/appwrite'\\); const c=require\\('./src/copartScraper'\\); console.log\\('appwrite exports:', Object.keys\\(a\\)\\); console.log\\('copart exports:', Object.keys\\(c\\)\\); const {InputFile}=require\\('node-appwrite/file'\\); console.log\\('InputFile:', typeof InputFile, typeof InputFile.fromBuffer\\); console.log\\('bucket:', process.env.APPWRITE_STORAGE_BUCKET_ID\\); console.log\\('sampleUrl:', a.buildFileViewUrl\\('abc123'\\)\\);\")"
     ]
   }
 }
