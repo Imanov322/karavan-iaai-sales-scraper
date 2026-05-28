@@ -34,16 +34,21 @@ app.post("/scrape", async (req, res) => {
     }
   }
 
-  const { lotNumber, winDate, account } = req.body || {};
-  if (!lotNumber || !winDate || !account) {
+  const { lotNumber, winDate, account, paid } = req.body || {};
+  // `paid` defaults to true (Purchase History). When false, the lot is looked
+  // up on the To Be Paid page and winDate is not required.
+  const isPaid = paid !== false;
+  if (!lotNumber || !account || (isPaid && !winDate)) {
     return res.status(400).json({
-      error: "lotNumber, winDate and account are required",
+      error: isPaid
+        ? "lotNumber, winDate and account are required"
+        : "lotNumber and account are required",
     });
   }
 
   try {
     const result = await queueScrape(() =>
-      scrape({ lotNumber, winDate, account }),
+      scrape({ lotNumber, winDate, account, paid: isPaid }),
     );
     return res.json(result);
   } catch (err) {

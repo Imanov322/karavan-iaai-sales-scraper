@@ -62,7 +62,11 @@ async function login(page, user, pass) {
   await page.waitForSelector('a[id="searchMenu"]');
 }
 
-async function navigateToPurchaseHistory(page) {
+/**
+ * Open the buyer portal and land on the "To Be Paid Vehicles" page. This is
+ * the same starting point used by the iaai-won-cars-bot /impact command.
+ */
+async function navigateToBuyerPortal(page) {
   await page.waitForSelector(
     '[data-bind="text: toBePaidVehiclesCount, click: toBePaidVehiclesClick"]',
     { visible: true },
@@ -71,6 +75,14 @@ async function navigateToPurchaseHistory(page) {
     '[data-bind="text: toBePaidVehiclesCount, click: toBePaidVehiclesClick"]',
   );
   await sleep(2000);
+}
+
+/**
+ * From the buyer portal, switch to the "Purchase History" tab (where paid /
+ * picked-up vehicles live).
+ */
+async function navigateToPurchaseHistory(page) {
+  await navigateToBuyerPortal(page);
 
   await page.waitForSelector("#liPurchaseHistory", { visible: true });
   await page.evaluate(() => {
@@ -226,56 +238,66 @@ async function selectTenantTab(page, tabHandle) {
 }
 
 /**
- * Read every stock number currently rendered in the report grid.
+ * Read every stock number currently rendered in the report grid. The Stock
+ * column index differs by page: 4th in To Be Paid, 5th in Purchase History.
  */
-async function getStockNumbersInGrid(page) {
-  return await page.evaluate(() => {
+async function getStockNumbersInGrid(page, stockCol) {
+  return await page.evaluate((col) => {
     const rows = Array.from(
       document.querySelectorAll("#ReportGrid tbody tr.k-master-row"),
     );
     return rows.map((row) => {
-      const link = row.querySelector("td:nth-child(5) a.bpLinkUnderline");
+      const link = row.querySelector(`td:nth-child(${col}) a.bpLinkUnderline`);
       return (link?.textContent || "").trim();
     });
-  });
+  }, stockCol);
 }
 
 /**
  * Find the row in the report grid whose Stock column matches `lotNumber`.
  * Returns 0-based row index, or -1.
  */
-async function findRowByLot(page, lotNumber) {
-  return await page.evaluate((needle) => {
-    const target = String(needle).trim();
-    const rows = Array.from(
-      document.querySelectorAll("#ReportGrid tbody tr.k-master-row"),
-    );
-    for (let i = 0; i < rows.length; i++) {
-      // Stock column is 5th in Purchase History
-      const stockLink = rows[i].querySelector(
-        "td:nth-child(5) a.bpLinkUnderline",
+async function findRowByLot(page, lotNumber, stockCol) {
+  return await page.evaluate(
+    (needle, col) => {
+      const target = String(needle).trim();
+      const rows = Array.from(
+        document.querySelectorAll("#ReportGrid tbody tr.k-master-row"),
       );
-      const stockNum = (stockLink?.textContent || "").trim();
-      if (stockNum === target) return i;
-    }
-    return -1;
-  }, lotNumber);
+      for (let i = 0; i < rows.length; i++) {
+        const stockLink = rows[i].querySelector(
+          `td:nth-child(${col}) a.bpLinkUnderline`,
+        );
+        const stockNum = (stockLink?.textContent || "").trim();
+        if (stockNum === target) return i;
+      }
+      return -1;
+    },
+    lotNumber,
+    stockCol,
+  );
 }
 
-async function openLotInNewTab(page, browser, rowIdx) {
+async function openLotInNewTab(page, browser, rowIdx, stockCol) {
   const newPagePromise = waitForNewPage(browser);
-  const clicked = await page.evaluate((idx) => {
-    const rows = Array.from(
-      document.querySelectorAll("#ReportGrid tbody tr.k-master-row"),
-    );
-    const row = rows[idx];
-    if (!row) return false;
-    const stockLink = row.querySelector("td:nth-child(5) a.bpLinkUnderline");
-    if (!stockLink) return false;
-    stockLink.scrollIntoView({ block: "center" });
-    stockLink.click();
-    return true;
-  }, rowIdx);
+  const clicked = await page.evaluate(
+    (idx, col) => {
+      const rows = Array.from(
+        document.querySelectorAll("#ReportGrid tbody tr.k-master-row"),
+      );
+      const row = rows[idx];
+      if (!row) return false;
+      const stockLink = row.querySelector(
+        `td:nth-child(${col}) a.bpLinkUnderline`,
+      );
+      if (!stockLink) return false;
+      stockLink.scrollIntoView({ block: "center" });
+      stockLink.click();
+      return true;
+    },
+    rowIdx,
+    stockCol,
+  );
 
   if (!clicked) throw new Error("Could not click the lot row");
 
@@ -294,13 +316,77 @@ async function openLotInNewTab(page, browser, rowIdx) {
 }
 
 /**
+ * Scan every tenant tab for the lot and, when found, open its VDP and return
+ * the page HTML. `stockCol` is the 1-based table column holding the stock link
+ * (4 on the To Be Paid page, 5 on Purchase History). Returns null if not found.
+ */
+async function findLotHtml(page, browser, { lotNumber, stockCol }) {
+  await page.waitForSelector(".tenantBarItem", { visible: true });
+  const tenantCount = await page.$$eval(".tenantBarItem", (els) => els.length);
+  console.log(`[scrape] ${tenantCount} tenant tab(s) to scan`);
+
+  const tenantNames = { 1: "IAA", 2: "ADESA", 3: "MPI", 4: "SGI", 5: "ICBC" };
+
+  for (let i = 0; i < tenantCount; i++) {
+    const tabs = await page.$$(".tenantBarItem");
+    const tab = tabs[i];
+    const tenantId = await tab.evaluate(
+      (el) =>
+        el.querySelector(".tenantBarBody")?.getAttribute("data-id") || "?",
+    );
+    const tenantLabel = `tab ${i + 1} (data-id=${tenantId} ${tenantNames[tenantId] || "?"})`;
+
+    // Skip the click on the tab that's already selected — clicking a
+    // selected tab on this page is a no-op and would not trigger reload.
+    const isSelected = await tab.evaluate(
+      (el) => !!el.querySelector(".tenantBarBody.selected"),
+    );
+    if (!isSelected) {
+      await selectTenantTab(page, tab);
+    } else {
+      console.log(`[scrape]   ${tenantLabel}: already selected`);
+      // Give the initially-selected tab's grid a chance to render.
+      await page
+        .waitForSelector("#ReportGrid tbody tr.k-master-row", {
+          visible: true,
+          timeout: 15000,
+        })
+        .catch(() => {});
+    }
+
+    const stockNums = await getStockNumbersInGrid(page, stockCol);
+    console.log(
+      `[scrape]   ${tenantLabel}: ${stockNums.length} row(s), stock #s: ${stockNums.join(", ") || "(none)"}`,
+    );
+
+    const rowIdx = await findRowByLot(page, lotNumber, stockCol);
+    if (rowIdx < 0) {
+      console.log(`[scrape]   ${tenantLabel}: lot ${lotNumber} not found`);
+      continue;
+    }
+
+    console.log(`[scrape]   ${tenantLabel}: lot ${lotNumber} at row ${rowIdx}`);
+    return await openLotInNewTab(page, browser, rowIdx, stockCol);
+  }
+
+  return null;
+}
+
+/**
  * Main entry point. Returns:
  *   { data, telegramDescription, imageUrls }
+ *
+ * `paid` selects where the lot is looked up:
+ *   - true  → Purchase History page (vehicle already paid). Needs `winDate`.
+ *   - false → To Be Paid page (vehicle still unpaid), mirroring the
+ *             iaai-won-cars-bot /impact flow. `winDate` is ignored.
  */
-async function scrape({ lotNumber, winDate, account }) {
+async function scrape({ lotNumber, winDate, account, paid = true }) {
   if (!lotNumber) throw new Error("lotNumber is required");
-  if (!winDate) throw new Error("winDate is required (YYYY-MM-DD)");
   if (!account) throw new Error("account is required");
+  if (paid && !winDate) {
+    throw new Error("winDate is required for paid lots (YYYY-MM-DD)");
+  }
 
   const { user, pass, accountKey } = resolveCredentials(account);
 
@@ -314,71 +400,37 @@ async function scrape({ lotNumber, winDate, account }) {
     console.log(`[scrape] login as ${accountKey}`);
     await login(page, user, pass);
 
-    console.log(`[scrape] navigating to Purchase History`);
-    await navigateToPurchaseHistory(page);
+    // Stock column differs between the two grids.
+    const stockCol = paid ? 5 : 4;
 
-    // Iterate tenant tabs — buyer accounts may have multiple, the lot lives in
-    // exactly one of them. We try each until we find a match.
-    await page.waitForSelector(".tenantBarItem", { visible: true });
-    const tenantCount = await page.$$eval(
-      ".tenantBarItem",
-      (els) => els.length,
-    );
-    console.log(`[scrape] ${tenantCount} tenant tab(s) to scan`);
+    let html;
+    if (paid) {
+      console.log(`[scrape] navigating to Purchase History`);
+      await navigateToPurchaseHistory(page);
 
-    const tenantNames = { 1: "IAA", 2: "ADESA", 3: "MPI", 4: "SGI", 5: "ICBC" };
-
-    // Set the date filter ONCE on whatever tab is initially selected. The
-    // FromDate/ToDate inputs are shared across all tenant tabs in the IAAI
-    // UI — switching tabs reuses the same filter.
-    console.log(`[scrape] setting global FromDate=ToDate=${winDate}`);
-    const initialHasRows = await setDateAndGetReport(page, winDate);
-    console.log(
-      `[scrape] initial report loaded: ${initialHasRows ? "rows present" : "no rows"}`,
-    );
-
-    let html = null;
-    for (let i = 0; i < tenantCount; i++) {
-      const tabs = await page.$$(".tenantBarItem");
-      const tab = tabs[i];
-      const tenantId = await tab.evaluate(
-        (el) =>
-          el.querySelector(".tenantBarBody")?.getAttribute("data-id") || "?",
-      );
-      const tenantLabel = `tab ${i + 1} (data-id=${tenantId} ${tenantNames[tenantId] || "?"})`;
-
-      // Skip the click on the tab that's already selected — clicking a
-      // selected tab on this page is a no-op and would not trigger reload.
-      const isSelected = await tab.evaluate(
-        (el) => !!el.querySelector(".tenantBarBody.selected"),
-      );
-      if (!isSelected) {
-        await selectTenantTab(page, tab);
-      } else {
-        console.log(`[scrape]   ${tenantLabel}: already selected`);
-      }
-
-      const stockNums = await getStockNumbersInGrid(page);
+      // Set the date filter ONCE on whatever tab is initially selected. The
+      // FromDate/ToDate inputs are shared across all tenant tabs in the IAAI
+      // UI — switching tabs reuses the same filter.
+      console.log(`[scrape] setting global FromDate=ToDate=${winDate}`);
+      const initialHasRows = await setDateAndGetReport(page, winDate);
       console.log(
-        `[scrape]   ${tenantLabel}: ${stockNums.length} row(s), stock #s: ${stockNums.join(", ") || "(none)"}`,
+        `[scrape] initial report loaded: ${initialHasRows ? "rows present" : "no rows"}`,
       );
 
-      const rowIdx = await findRowByLot(page, lotNumber);
-      if (rowIdx < 0) {
-        console.log(`[scrape]   ${tenantLabel}: lot ${lotNumber} not found`);
-        continue;
-      }
+      html = await findLotHtml(page, browser, { lotNumber, stockCol });
+    } else {
+      console.log(`[scrape] navigating to To Be Paid Vehicles (unpaid lot)`);
+      await navigateToBuyerPortal(page);
 
-      console.log(
-        `[scrape]   ${tenantLabel}: lot ${lotNumber} at row ${rowIdx}`,
-      );
-      html = await openLotInNewTab(page, browser, rowIdx);
-      break;
+      html = await findLotHtml(page, browser, { lotNumber, stockCol });
     }
 
     if (!html) {
+      const where = paid
+        ? `purchase history for ${winDate}`
+        : "to-be-paid vehicles";
       throw new Error(
-        `Lot ${lotNumber} not found in purchase history for ${winDate} on account ${accountKey}`,
+        `Lot ${lotNumber} not found in ${where} on account ${accountKey}`,
       );
     }
 
